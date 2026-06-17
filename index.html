@@ -967,9 +967,36 @@ function resetToDefault() {
 // ===== 全局变量
 let REFRESH_INTERVAL = 10;
 
+// ===== 从盘后总结加载自动计算的目标价 =====
+function loadSummaryData() {
+  fetch('./data/summary.json?_t=' + Date.now())
+    .then(r => r.json())
+    .then(data => {
+      for (const trade of TRADES) {
+        const sym = trade.code.replace('sh', 'sh');
+        const info = data.stocks[trade.code];
+        if (!info || info.error) continue;
+        // 仅覆盖自动计算的价格，不覆盖用户手动编辑的
+        if (!localStorage.getItem('finance_dashboard_settings')) {
+          trade.targets.buy_ok = info.buy_ok;
+          trade.targets.buy_good = info.buy_good;
+          trade.targets.buy_best = info.buy_best;
+          trade.targets.sell = info.sell;
+          trade.note = '🔄 自动计算 (布林带+均线) RSI' + info.rsi14;
+        }
+      }
+      document.getElementById('intervalDisplay').textContent =
+        '刷新:' + REFRESH_INTERVAL + 's · 📊盘后已加载';
+    })
+    .catch(() => {
+      // 盘后数据不可用（首次部署/网络问题），不影响正常使用
+    });
+}
+
 // ===== 启动 =====
 document.addEventListener('DOMContentLoaded', () => {
   loadSavedSettings();
+  loadSummaryData();
   renderFees();
   refreshAll();
   document.getElementById('intervalDisplay').textContent = '刷新:' + REFRESH_INTERVAL + 's';
