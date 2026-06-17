@@ -1,0 +1,20 @@
+name: 📊 盘后总结
+on:
+  schedule:
+    - cron: '30 3 * * 1-5'
+    - cron: '5 7 * * 1-5'
+  workflow_dispatch:
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 计算技术指标
+        run: python3 scripts/compute_summary.py
+      - name: 提交结果
+        run: |
+          git config user.name "Q-Bot"
+          git config user.email "bot@macurd.github.io"
+          git add data/summary.json
+          git diff --cached --quiet || git commit -m "summary: $(date +'%Y-%m-%d %H:%M')"
+          git push

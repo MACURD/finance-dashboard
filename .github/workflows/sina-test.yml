@@ -1,7 +1,0 @@
-name: Sina Test
-on: push
-jobs:
-  j1:
-    runs-on: ubuntu-latest
-    steps:
-    - run: curl -s --max-time 15 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh601166&scale=240&ma=no&datalen=3" | head -100
