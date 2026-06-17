@@ -1,8 +1,0 @@
-name: Test Sina API
-on: [push]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Test Sina K-line
-        run: curl -s --max-time 15 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh601166&scale=240&ma=no&datalen=60" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'OK: {len(d)} k-lines, latest close: {d[-1][\"close\"]}')"
