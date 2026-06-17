@@ -4,18 +4,5 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          echo "=== 新浪 K-line (从 GitHub US 服务器) ==="
-          for sym in sh601166 sh600406 sh600900 sh601985 sh600089; do
-            DATA=$(curl -s --max-time 15 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sym}&scale=240&ma=no&datalen=60")
-            echo "$DATA" | python3 -c "
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(f'  {sym}: {len(d)}条K线, 最新: {d[-1][\"close\"]}' if d else f'  {sym}: ❌ 空')
-except: print(f'  {sym}: ❌ 解析失败')
-" 2>/dev/null
-          done
-          echo ""
-          echo "=== 腾讯实时 (对照) ==="
-          curl -s --max-time 10 "https://qt.gtimg.cn/q=sh601166,sh600406" | grep -oP 'v_\w+="[^"]+' | head -2
+      - name: Test Sina K-line
+        run: curl -s --max-time 15 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh601166&scale=240&ma=no&datalen=60" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'OK: {len(d)} k-lines, latest close: {d[-1][\"close\"]}')"
