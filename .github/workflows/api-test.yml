@@ -6,19 +6,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 测试东方财富 K-line API
+      - name: 测试东方财富 + 新浪 K-line API
         run: |
-          echo "=== 东方财富 K-line ==="
+          set +e
+          echo "=== 东方财富 K-line (境外IP) ==="
           for code in "1.601166" "1.600406" "1.600900" "1.601985" "1.600089"; do
-            DATA=$(curl -s --max-time 15 "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${code}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=60")
-            COUNT=$(echo "$DATA" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('data',{}).get('klines',[])))" 2>/dev/null || echo "FAIL")
-            echo "  $code: $COUNT 条K线"
+            curl -s --max-time 15 -o /tmp/em.txt -w "  $code: HTTP %{http_code} (%{size_download} bytes)\n" \
+              "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${code}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=60"
           done
-      - name: 测试新浪 K-line API
-        run: |
-          echo "=== 新浪 K-line ==="
+          echo ""
+          echo "=== 新浪 K-line (境外IP) ==="
           for sym in "sh601166" "sh600406" "sh600900" "sh601985" "sh600089"; do
             DATA=$(curl -s --max-time 15 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sym}&scale=240&ma=no&datalen=60")
-            COUNT=$(echo "$DATA" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "FAIL")
-            echo "  $sym: $COUNT 条K线"
+            echo "$DATA" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    if len(d)>0:
+        print(f'  {sym}: ✅ {len(d)}条K线, 最新: {d[-1][\"day\"][:10]} 收{d[-1][\"close\"]}')
+    else:
+        print(f'  {sym}: ❌ 空数据')
+except:
+    print(f'  {sym}: ❌ 解析失败')
+" 2>&1
           done
+          echo ""
+          echo "=== 腾讯行情 (实时，对照) ==="
+          DATA=$(curl -s --max-time 10 "https://qt.gtimg.cn/q=sh601166,sh600406,sh600900,sh601985,sh600089")
+          echo "$DATA" | python3 -c "
+import sys,re
+for line in sys.stdin.read().split(';'):
+    m=re.search(r'v_\w+=\"([^\"]+)\"', line)
+    if m:
+        p=m.group(1).split('~')
+        print(f'  {p[1]}: ¥{p[3]}')
+" 2>&1
