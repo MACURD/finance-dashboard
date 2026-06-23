@@ -510,6 +510,172 @@ const TRADES = [
   },
 ];
 
+// ===== 为关注池股票自动创建待分析操作条目 =====
+function createSkeletonTrade(name, code) {
+  if (TRADES.some(t => t.code === code)) return null;
+  const t = {
+    name, code,
+    shares: 0, cost: 0,
+    type: '📌 待分析', desc: '正在获取历史K线计算策略...',
+    targets: { buy_ok: 0, buy_good: 0, buy_best: 0, sell: 0 },
+    note: '⏳ 自动分析中，请稍候...',
+    plan: '⏳ 获取历史数据并计算目标价...',
+    _skeleton: true
+  };
+  TRADES.push(t);
+  // 异步拉取K线 → 自动计算目标价
+  autoConfigureTrade(t);
+  return t;
+}
+
+// ===== 自动从行情接口计算操作策略 =====
+function _round(v, digits) {
+  const p = Math.pow(10, digits);
+  return Math.round(v * p) / p;
+}
+
+function _ma(arr, n) {
+  if (arr.length < n) return null;
+  let sum = 0;
+  for (let i = arr.length - n; i < arr.length; i++) sum += arr[i];
+  return sum / n;
+}
+
+function _std(arr, mean, n) {
+  if (arr.length < n) return null;
+  let sumSq = 0;
+  for (let i = arr.length - n; i < arr.length; i++) sumSq += (arr[i] - mean) ** 2;
+  return Math.sqrt(sumSq / n);
+}
+
+function _rsi(closes, period) {
+  if (closes.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) gains += d; else losses -= d;
+  }
+  const avgG = gains / period, avgL = losses / period;
+  if (avgL === 0) return 100;
+  return 100 - 100 / (1 + avgG / avgL);
+}
+
+async function fetchKLines(code) {
+  // 腾讯行情 K-line API, code like sh601985
+  const url = 'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + code + ',day,,,100';
+  const resp = await fetch(url, { cache: 'no-cache' });
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch(e) { return []; }
+  // Navigate nested data: data -> symbol -> day
+  for (const key of Object.keys(json.data || {})) {
+    const days = json.data[key]?.day;
+    if (days && days.length > 0) return days;
+  }
+  return [];
+}
+
+function _classifyType(closes, rsi) {
+  const last = closes[closes.length - 1];
+  const ma20 = _ma(closes, 20);
+  const ma5 = _ma(closes, 5);
+  if (!ma20) return '📌 震荡观察';
+  const aboveMA20 = last > ma20;
+  const trendUp = ma5 && ma20 && ma5 > ma20 && last > ma5;
+  if (rsi < 35) return '📈 超跌反弹';
+  if (rsi > 65 && !aboveMA20) return '📊 追涨谨慎';
+  if (trendUp) return '📈 上升趋势';
+  if (!aboveMA20 && rsi > 50) return '📉 阻力位附近';
+  return '📌 震荡观察';
+}
+
+function _genDesc(closes, rsi, ma20, upper, lower) {
+  const parts = [];
+  if (rsi != null) parts.push('RSI' + _round(rsi, 1));
+  if (ma20) parts.push('MA20 ¥' + _round(ma20, 2));
+  if (upper && lower) {
+    const bw = _round((upper - lower) / ma20 * 100, 1);
+    if (bw < 10) parts.push('布林收窄');
+    else if (bw > 30) parts.push('布林开口');
+  }
+  return parts.join(' · ');
+}
+
+async function autoConfigureTrade(trade) {
+  try {
+    const klines = await fetchKLines(trade.code);
+    if (!klines || klines.length < 20) {
+      // K线数据不足 → 回退到实时价格推算
+      return await _autoFallback(trade);
+    }
+    const closes = klines.map(k => parseFloat(k[4]));
+    const lastPrice = closes[closes.length - 1];
+    const ma20 = _ma(closes, 20);
+    if (!ma20 || ma20 <= 0) {
+      return await _autoFallback(trade);
+    }
+    const rsi = _rsi(closes, 14);
+    const std = _std(closes, ma20, 20);
+    const upper = ma20 + 2 * std;
+    const lower = ma20 - 2 * std;
+
+    // 设置四级目标价（布林带）
+    trade.targets.buy_ok = _round(ma20, 2);        // 中轨 = 合理
+    trade.targets.buy_good = _round((ma20 + lower) / 2, 2); // 中下轨间 = 优秀
+    trade.targets.buy_best = _round(lower, 2);     // 下轨 = 支撑
+    trade.targets.sell = _round(upper, 2);         // 上轨 = 止盈
+
+    trade.type = _classifyType(closes, rsi);
+    trade.desc = _genDesc(closes, rsi, ma20, upper, lower);
+    trade.note = '🔄 布林带+均线 RSI' + _round(rsi, 1) + ' · ' + klines.length + '日K线';
+
+    trade._skeleton = false;
+    _fillPlan(trade);
+    return refreshAll();
+  } catch (e) {
+    console.warn('自动分析 ' + trade.code + ' K线失败:', e);
+    return await _autoFallback(trade);
+  }
+}
+
+// 回退方案：实时价格百分比推算（不依赖K线API）
+async function _autoFallback(trade) {
+  try {
+    const resp = await fetch('https://qt.gtimg.cn/q=' + trade.code, { cache: 'no-cache' });
+    const text = await resp.text();
+    const m = text.match(/v_\w+="(.+)"\s*;?\s*$/m);
+    if (!m) throw new Error('解析实时行情失败');
+    const parts = m[1].split('~');
+    const price = parseFloat(parts[3]) || 0;
+    if (price <= 0) throw new Error('实时价格无效');
+    // 基于当前价格的百分比推算目标价
+    trade.targets.buy_ok = _round(price * 0.98, 2);
+    trade.targets.buy_good = _round(price * 0.96, 2);
+    trade.targets.buy_best = _round(price * 0.94, 2);
+    trade.targets.sell = _round(price * 1.05, 2);
+    trade.type = '📌 震荡观察';
+    trade.desc = '基于实时价格推算（K线API暂不可用）';
+    trade.note = 'ℹ️ 临时基于实时价格推算，K线可用后自动更新';
+    trade._skeleton = false;
+    _fillPlan(trade);
+  } catch (e2) {
+    console.warn('自动分析回退也失败:', e2);
+    trade.note = '⚠️ 自动分析失败，请稍后重试或手动配置';
+    trade.plan = '点击⚙️管理面板手动配置操作策略';
+  }
+  refreshAll();
+}
+
+// 统一生成操作计划文本
+function _fillPlan(trade) {
+  const s = trade.shares > 0 ? trade.shares : 400;
+  const s2 = Math.round(s / 2);
+  const okP = trade.targets.buy_ok;
+  const selP = trade.targets.sell;
+  trade.plan = '现价→合理¥' + okP.toFixed(2) + '入' + s +
+    '→优秀+' + s + '→支撑+' + s + '→止盈¥' + selP.toFixed(2) + '减至' + s2;
+}
+
 // ===== 行情 API =====
 function fetchPrices(codes) {
   const query = codes.join(',');
@@ -682,7 +848,11 @@ function updateStatus(data) {
 function getSignal(t, price) {
   if (!price || price === 0) return { level: 'wait', text: '等待数据', cls: 'wait' };
   const tg = t.targets;
-  // 特变电工（短线做T）
+  // 待分析骨架条目（所有目标价为0，非T模式）
+  if (t._skeleton || (tg.buyT === undefined && tg.buy_ok === 0 && tg.buy_good === 0 && tg.buy_best === 0 && tg.sell === 0)) {
+    return { level: 'wait', text: '⚙️ 待配置操作策略', cls: 'wait' };
+  }
+  // 短线做T
   if (tg.buyT !== undefined) {
     if (price <= tg.stopLoss) return { level: 'alert', text: '⚠️ 止损位！跌破¥'+tg.stopLoss, cls: 'sell' };
     if (price >= tg.sellT) return { level: 'sell', text: '📤 止盈位！T出', cls: 'sell' };
@@ -699,6 +869,7 @@ function getSignal(t, price) {
 
 function renderActions(data) {
   const board = document.getElementById('actionBoard');
+  document.getElementById('actionCount').textContent = TRADES.length;
   let html = '<div class="action-grid">';
   for (const t of TRADES) {
     const d = data[t.code];
@@ -731,12 +902,14 @@ function renderActions(data) {
     const keys = Object.keys(tg);
     for (const k of keys) {
       const v = tg[k];
+      // 骨架条目的0值目标不显示
+      if (v === 0 && (k === 'buy_ok' || k === 'buy_good' || k === 'buy_best' || k === 'sell')) continue;
       const labelMap = {
         buy_ok: '🟢 合理', buy_good: '🟡 优秀', buy_best: '🔴 支撑',
         sell: '📤 止盈',
         buyT: '📥 T买入', sellT: '📤 T卖出', stopLoss: '🛑 止损',
       };
-      const isActive = price > 0 && (
+      const isActive = price > 0 && v > 0 && (
         (k === 'buy_ok' && price <= v) ||
         (k === 'buy_good' && price <= v) ||
         (k === 'buy_best' && price <= v) ||
@@ -864,15 +1037,34 @@ function saveSettings() {
     const h = _adminDirty.holdings[i];
     HOLDINGS[i] = { name: h.name, code: h.code, shares: h.shares, cost: h.shares * h.avgCost, avgCost: h.avgCost };
     // Update TRADES
-    const t = TRADES.find(t => t.code === h.code || t.name === h.name);
-    if (t) { t.shares = h.shares; t.cost = h.avgCost; }
+    const t = TRADES.find(x => x.code === h.code || x.name === h.name);
+    if (t) {
+      t.shares = h.shares; t.cost = h.avgCost;
+    } else {
+      // 新增持仓的股票 → 自动创建待分析操作条目
+      createSkeletonTrade(h.name, h.code);
+    }
   }
   HOLDINGS.length = _adminDirty.holdings.length;
 
-  // Save watchlist
+  // Save watchlist & sync TRADES
+  const prevWatchCodes = new Set(WATCHLIST.map(w => w.code));
   WATCHLIST.length = 0;
   for (const w of _adminDirty.watchlist) {
     WATCHLIST.push({ name: w.name, code: w.code, reason: w.reason || '' });
+    // 新关注的股票 → 自动创建待分析操作条目
+    if (!prevWatchCodes.has(w.code) && !TRADES.some(t => t.code === w.code)) {
+      createSkeletonTrade(w.name, w.code);
+    }
+  }
+
+  // 清除不再持仓也不在关注池的骨架TRADES条目
+  const activeCodes = new Set([...HOLDINGS.map(h => h.code), ...WATCHLIST.map(w => w.code)]);
+  for (let i = TRADES.length - 1; i >= 0; i--) {
+    const t = TRADES[i];
+    if (t._skeleton && !activeCodes.has(t.code)) {
+      TRADES.splice(i, 1);
+    }
   }
 
   // Save fee
@@ -890,10 +1082,17 @@ function saveSettings() {
     document.getElementById('intervalDisplay').textContent = '刷新:' + newInterval + 's';
   }
 
-  // Persist to localStorage
+  // Persist to localStorage（含TRADES，防止刷新丢失）
   localStorage.setItem('finance_dashboard_settings', JSON.stringify({
     holdings: HOLDINGS.map(h => ({name:h.name, code:h.code, shares:h.shares, avgCost:h.avgCost})),
     watchlist: WATCHLIST,
+    trades: TRADES.map(t => ({
+      name: t.name, code: t.code, shares: t.shares, cost: t.cost,
+      type: t.type, desc: t.desc,
+      targets: {...t.targets},
+      note: t.note, plan: t.plan,
+      _skeleton: t._skeleton
+    })),
     fee: { commission: FEE.commission, stamp: FEE.stamp, transfer: FEE.transfer, minCommission: FEE.minCommission },
     interval: REFRESH_INTERVAL
   }));
@@ -920,6 +1119,13 @@ function loadSavedSettings() {
     }
     if (s.fee) {
       Object.assign(FEE, s.fee);
+    }
+    if (s.trades && s.trades.length > 0) {
+      // 完全替换：持久化数据覆盖硬编码，包含所有动态新增条目
+      TRADES.length = 0;
+      for (const t of s.trades) {
+        TRADES.push(t);
+      }
     }
     if (s.interval && s.interval >= 3) {
       REFRESH_INTERVAL = s.interval;
@@ -994,11 +1200,19 @@ function loadSummaryData() {
 }
 
 // ===== 启动 =====
+function autoConfigurePendingTrades() {
+  for (const t of TRADES) {
+    if (t._skeleton) autoConfigureTrade(t);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   loadSavedSettings();
   loadSummaryData();
   renderFees();
   refreshAll();
+  // 自动计算所有待分析的骨架条目（来自localStorage恢复的历史数据）
+  autoConfigurePendingTrades();
   document.getElementById('intervalDisplay').textContent = '刷新:' + REFRESH_INTERVAL + 's';
   window._refreshTimer = setInterval(() => {
     if (isMarketOpen()) refreshAll();
