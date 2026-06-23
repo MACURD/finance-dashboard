@@ -581,30 +581,6 @@ const _KLINE_SOURCES = [
     }
   },
   {
-    name: '腾讯K线',
-    buildUrl: (code) =>
-      'https://web.ifzq.gtimg.cn/appstock/app/kline/mkline?param=' + code + ',mday,,,100',
-    parse: (text) => {
-      const json = JSON.parse(text);
-      if (json.code !== 0 || !json.data) return [];
-      // 遍历嵌套结构
-      for (const key of Object.keys(json.data)) {
-        const days = json.data[key]?.mday || json.data[key]?.day;
-        if (days && days.length > 0) {
-          return days.map(k => ({
-            day: (k[0]||'').slice(0,10),
-            open: parseFloat(k[1]) || 0,
-            close: parseFloat(k[2]) || 0,
-            high: parseFloat(k[3]) || 0,
-            low: parseFloat(k[4]) || 0,
-            volume: parseFloat(k[5]) || 0,
-          }));
-        }
-      }
-      return [];
-    }
-  },
-  {
     name: '东方财富',
     buildUrl: (code) => {
       // code: sh601985 → 1.601985
@@ -1133,11 +1109,10 @@ function saveSettings() {
     }
   }
 
-  // 清除不再持仓也不在关注池的骨架TRADES条目
+  // 清除已从持仓和关注池中删除的TRADES条目
   const activeCodes = new Set([...HOLDINGS.map(h => h.code), ...WATCHLIST.map(w => w.code)]);
   for (let i = TRADES.length - 1; i >= 0; i--) {
-    const t = TRADES[i];
-    if (t._skeleton && !activeCodes.has(t.code)) {
+    if (!activeCodes.has(TRADES[i].code)) {
       TRADES.splice(i, 1);
     }
   }
