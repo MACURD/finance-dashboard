@@ -561,18 +561,21 @@ function _rsi(closes, period) {
 }
 
 async function fetchKLines(code) {
-  // 腾讯行情 K-line API, code like sh601985
-  const url = 'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + code + ',day,,,100';
+  // 新浪财经日K线 API（与后端 backfill 一致）
+  const days = 100;
+  const url = 'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' +
+    code + '&scale=240&ma=5&datalen=' + days;
   const resp = await fetch(url, { cache: 'no-cache' });
   const text = await resp.text();
-  let json;
-  try { json = JSON.parse(text); } catch(e) { return []; }
-  // Navigate nested data: data -> symbol -> day
-  for (const key of Object.keys(json.data || {})) {
-    const days = json.data[key]?.day;
-    if (days && days.length > 0) return days;
+  try {
+    const json = JSON.parse(text);
+    // 返回 [{day: '2026-06-22', open: '9.10', high: '9.15', low: '8.97', close: '9.08', volume: '133580985'}, ...]
+    if (Array.isArray(json)) return json;
+    return [];
+  } catch(e) {
+    console.warn('解析K线数据失败:', e);
+    return [];
   }
-  return [];
 }
 
 function _classifyType(closes, rsi) {
@@ -608,7 +611,7 @@ async function autoConfigureTrade(trade) {
       // K线数据不足 → 回退到实时价格推算
       return await _autoFallback(trade);
     }
-    const closes = klines.map(k => parseFloat(k[4]));
+    const closes = klines.map(k => parseFloat(k.close || k[4]));
     const lastPrice = closes[closes.length - 1];
     const ma20 = _ma(closes, 20);
     if (!ma20 || ma20 <= 0) {
